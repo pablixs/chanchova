@@ -1,48 +1,28 @@
-import { useEffect, useState } from "react";
-import { MAX_PLAYERS } from "@chanchova/shared";
+// Componente raiz: routea segun el estado global de la app.
+//
+// No usamos react-router porque la navegacion la dirige el server (los
+// eventos WebSocket transicionan al usuario entre pantallas). Una FSM
+// simple en AppContext.status alcanza para HomePage/Lobby/Game.
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
-
-interface HealthResponse {
-  status: string;
-  service: string;
-  timestamp: string;
-  decksAvailable: string[];
-}
+import { GamePage } from "./pages/GamePage";
+import { HomePage } from "./pages/HomePage";
+import { LobbyPage } from "./pages/LobbyPage";
+import { useApp } from "./state/AppContext";
 
 export function App() {
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { status, lobby, game } = useApp();
 
-  useEffect(() => {
-    fetch(`${API_URL}/health`)
-      .then((res) => res.json())
-      .then((data: HealthResponse) => setHealth(data))
-      .catch((err: unknown) => setError(String(err)));
-  }, []);
+  if (status === "loading") {
+    return <p className="screen">Conectando...</p>;
+  }
 
-  return (
-    <main style={{ fontFamily: "system-ui, sans-serif", padding: "2rem" }}>
-      <h1>Chanchova</h1>
-      <p>Juego del Chancho argentino. Hasta {MAX_PLAYERS} jugadores.</p>
+  if (status === "in_game" || status === "finished" || game) {
+    return <GamePage />;
+  }
 
-      <section style={{ marginTop: "2rem" }}>
-        <h2>Estado de la API</h2>
-        {error && <p style={{ color: "crimson" }}>Error: {error}</p>}
-        {health ? (
-          <pre
-            style={{
-              background: "#f4f4f4",
-              padding: "1rem",
-              borderRadius: 8,
-            }}
-          >
-            {JSON.stringify(health, null, 2)}
-          </pre>
-        ) : (
-          !error && <p>Cargando...</p>
-        )}
-      </section>
-    </main>
-  );
+  if (status === "in_lobby" || lobby) {
+    return <LobbyPage />;
+  }
+
+  return <HomePage />;
 }
