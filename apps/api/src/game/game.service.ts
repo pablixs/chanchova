@@ -3,15 +3,13 @@
 // Es el unico punto donde se aplica el motor de juego: recibe acciones del
 // gateway (que vienen del WebSocket), las despacha al ChanchoDirigidoStrategy,
 // guarda el nuevo estado y se encarga de:
-//   1. Broadcastear estado publico a todos los jugadores de la sala.
+//   1. Broadcastear estado publico (con ids anonimos del pozo).
 //   2. Enviar la mano privada a cada cliente (segun cambie).
-//   3. Programar / cancelar los timers de slap, pozo central, gracia de
-//      reconexion.
-//   4. Reaccionar a eventos especiales (eliminacion, fin de partida).
+//   3. Programar / cancelar timers de slap, pozo, gracia de reconexion y la
+//      pausa entre rondas.
+//   4. Reaccionar a fin de ronda (auto START_ROUND tras una breve pausa) y
+//      fin de partida.
 //   5. Gatillar al BotOrchestrator para que los bots actuen.
-//
-// Es la pieza grande pero todas las reglas viven en el motor; aca solo hay
-// pegamento entre motor, timers, bots y red.
 
 import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import type { Server } from "socket.io";
@@ -36,11 +34,15 @@ import { ConnectionRegistry } from "../connection/connection.registry";
 import type { LobbyRoom } from "../lobby/lobby.service";
 import { BotOrchestrator } from "./bot/bot-orchestrator";
 import { GameStore } from "./game-store";
+import { PoolAnonymizer } from "./pool-anonymizer";
 import {
   projectPrivateHand,
   projectPublicState,
 } from "./public-state.projector";
 import { TimeoutManager } from "./timeout-manager";
+
+/** Pausa antes de auto-arrancar la siguiente ronda tras un Chancho. */
+const NEXT_ROUND_DELAY_MS = 3_500;
 
 @Injectable()
 export class GameService implements OnModuleInit {
@@ -48,7 +50,6 @@ export class GameService implements OnModuleInit {
   private readonly strategy = new ChanchoDirigidoStrategy();
   private readonly deps: EngineDeps = { rng: defaultRng };
 
-  // El servidor IO se inyecta diferido (lo recibe el lobby gateway al startGame).
   private io?: Server;
 
   constructor(
@@ -56,23 +57,22 @@ export class GameService implements OnModuleInit {
     private readonly registry: ConnectionRegistry,
     private readonly timeouts: TimeoutManager,
     private readonly bots: BotOrchestrator,
+    private readonly anonymizer: PoolAnonymizer,
   ) {}
 
   onModuleInit(): void {
-    // Cableamos el dispatcher del orchestrator. Lo pasamos como arrow para
-    // capturar el `this` correcto y poder reusar la logica de submitAction.
-    this.bots.setDispatcher((gameId, action) => this.submitAction(gameId, action));
+    this.bots.setDispatcher((gameId, action) =>
+      this.submitAction(gameId, action),
+    );
   }
 
   // -------------------------------------------------------------------------
-  // Arranque de partida (lo invoca el LobbyGateway al recibir lobby:start).
+  // Arranque de partida.
   // -------------------------------------------------------------------------
   startGame(room: LobbyRoom, io: Server): void {
     this.io = io;
     const deck = getDeck(room.deckId);
-    if (!deck) {
-      throw new Error(`Mazo desconocido: ${room.deckId}`);
-    }
+    if (!deck) throw new Error(`Mazo desconocido: ${room.deckId}`);
     const initial = createGameSession({
       id: room.gameId,
       code: room.code,
@@ -83,30 +83,38 @@ export class GameService implements OnModuleInit {
       players: room.players,
     });
     this.store.set(room.gameId, initial);
-
-    // Disparar la primera ronda inmediatamente.
     this.dispatch(room.gameId, { type: "START_ROUND", timestamp: Date.now() });
     this.broadcastGameStarted(room.gameId);
   }
 
   // -------------------------------------------------------------------------
-  // Despacho de acciones desde el GameGateway o el BotOrchestrator.
+  // Despacho de acciones.
   // -------------------------------------------------------------------------
   submitAction(gameId: string, action: EngineAction): { error?: string } {
     return this.dispatch(gameId, action);
   }
 
-  // -------------------------------------------------------------------------
-  // Hooks de conexion (los invoca el LobbyGateway).
-  // -------------------------------------------------------------------------
-
   /**
-   * El cliente se desconecto durante una partida en curso. Marcamos al
-   * jugador como DISCONNECTED y arrancamos la gracia de reconexion. Si dentro
-   * del intervalo no vuelve, se considera abandono y se despacha
-   * PLAYER_ABANDONED al motor (que lo elimina) seguido de un START_ROUND
-   * para repartir mano nueva.
+   * Variante para acciones que necesitan traduccion de id anonimo del pozo
+   * a id real (PLAYER_GRABS_FROM_CENTER). Si no se puede resolver, devuelve
+   * error y no toca el motor.
    */
+  submitGrab(gameId: string, playerId: string, anonCardId: string): { error?: string } {
+    const realId = this.anonymizer.resolveAnonId(gameId, anonCardId);
+    if (!realId) {
+      return { error: "CARD_NOT_IN_POOL: id desconocido" };
+    }
+    return this.dispatch(gameId, {
+      type: "PLAYER_GRABS_FROM_CENTER",
+      playerId,
+      cardId: realId,
+      timestamp: Date.now(),
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Hooks de conexion.
+  // -------------------------------------------------------------------------
   handlePlayerDisconnected(gameId: string, userId: string): void {
     const state = this.store.get(gameId);
     if (!state || state.status !== "IN_PROGRESS") return;
@@ -118,7 +126,6 @@ export class GameService implements OnModuleInit {
     this.broadcastPublicState(gameId, newState);
     this.broadcastDisconnected(gameId, userId, state.config.reconnectGraceMs);
 
-    // Programar el abandono.
     this.timeouts.schedule(
       gameId,
       `reconnect:${userId}`,
@@ -127,7 +134,6 @@ export class GameService implements OnModuleInit {
     );
   }
 
-  /** El cliente se reconecto a tiempo: cancelamos la gracia y lo restauramos. */
   handlePlayerReconnected(gameId: string, userId: string): void {
     this.timeouts.cancel(gameId, `reconnect:${userId}`);
     const state = this.store.get(gameId);
@@ -139,11 +145,9 @@ export class GameService implements OnModuleInit {
     this.store.set(gameId, newState);
     this.broadcastPublicState(gameId, newState);
     this.broadcastReconnected(gameId, userId);
-    // Re-mandamos su mano privada.
     this.sendPrivateHand(userId, projectPrivateHand(newState, userId));
   }
 
-  /** Vencio la gracia: el jugador abandona, motor lo elimina y rebarajamos. */
   private handleAbandonExpired(gameId: string, userId: string): void {
     this.logger.warn(`abandon: ${userId} en game ${gameId}`);
     const result = this.dispatch(gameId, {
@@ -152,8 +156,6 @@ export class GameService implements OnModuleInit {
       timestamp: Date.now(),
     });
     if (result.error) return;
-
-    // Si la partida no termino, repartir mano nueva con los activos restantes.
     const state = this.store.get(gameId);
     if (state && state.status === "IN_PROGRESS") {
       this.dispatch(gameId, {
@@ -164,7 +166,7 @@ export class GameService implements OnModuleInit {
   }
 
   // -------------------------------------------------------------------------
-  // Dispatch: aplica accion, guarda estado, broadcastea y maneja timers.
+  // Dispatch principal.
   // -------------------------------------------------------------------------
   private dispatch(gameId: string, action: EngineAction): { error?: string } {
     const state = this.store.get(gameId);
@@ -183,15 +185,28 @@ export class GameService implements OnModuleInit {
     if (result.state.status === "FINISHED") {
       this.timeouts.cancelAll(gameId);
       this.bots.cancelGame(gameId);
-    } else {
-      // Que los bots evaluen si tienen que actuar.
-      this.bots.evaluate(gameId);
+      this.anonymizer.clear(gameId);
+      return {};
     }
+
+    // Si la ronda quedo en RESOLVED, programar arranque de la siguiente
+    // tras una pausa para que los jugadores vean el resultado. Pausamos los
+    // bots hasta entonces (no tienen nada que hacer en RESOLVED).
+    if (result.state.currentRound?.phase === "RESOLVED") {
+      this.bots.cancelGame(gameId);
+      this.timeouts.schedule(gameId, "next-round", NEXT_ROUND_DELAY_MS, () => {
+        this.dispatch(gameId, { type: "START_ROUND", timestamp: Date.now() });
+      });
+      return {};
+    }
+
+    // Estado normal: que los bots evaluen.
+    this.bots.evaluate(gameId);
     return {};
   }
 
   // -------------------------------------------------------------------------
-  // Programacion de timers segun la fase actual del estado.
+  // Programacion de timers segun la fase.
   // -------------------------------------------------------------------------
   private scheduleTimersForState(gameId: string, state: EngineState): void {
     const round = state.currentRound;
@@ -223,7 +238,7 @@ export class GameService implements OnModuleInit {
   }
 
   // -------------------------------------------------------------------------
-  // Broadcasts
+  // Broadcasts.
   // -------------------------------------------------------------------------
   private broadcastGameStarted(gameId: string): void {
     if (!this.io) return;
@@ -232,7 +247,7 @@ export class GameService implements OnModuleInit {
 
   private broadcastPublicState(gameId: string, state: EngineState): void {
     if (!this.io) return;
-    const publicState: GameSession = projectPublicState(state);
+    const publicState: GameSession = projectPublicState(state, this.anonymizer);
     this.io.to(this.channel(gameId)).emit(SERVER_EVENTS.GAME_PUBLIC_STATE, {
       session: publicState,
     });
@@ -294,12 +309,10 @@ export class GameService implements OnModuleInit {
     }
   }
 
-  // Helpers ---------------------------------------------------------------
   private channel(gameId: string): string {
     return `room:${gameId}`;
   }
 
-  /** Devuelve los jugadores activos de una partida (uso del gateway). */
   getPlayers(gameId: string): Player[] | undefined {
     return this.store.get(gameId)?.players;
   }
@@ -318,7 +331,6 @@ function handsEqual(
   return true;
 }
 
-/** Mapea un evento del motor al evento WS publico equivalente. */
 function mapEngineEventToWsEvent(
   event: EngineEmittedEvent,
 ): { type: string; payload: unknown } | undefined {
@@ -334,6 +346,8 @@ function mapEngineEventToWsEvent(
         payload: { instruction: event.instruction },
       };
     case "CENTER_OPENED":
+      // El cardCount real lo van a recibir via game:public_state. Aqui solo
+      // notificamos el evento.
       return {
         type: SERVER_EVENTS.GAME_CENTER_OPEN,
         payload: { cardCount: event.cardCount },
