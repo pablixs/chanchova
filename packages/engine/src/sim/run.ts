@@ -106,6 +106,8 @@ function fmtEvent(e: EngineEmittedEvent): string {
     }
     case "PLAYER_ELIMINATED":
       return `PLAYER_ELIMINATED (${e.playerId})`;
+    case "PLAYER_ABANDONED":
+      return `PLAYER_ABANDONED (${e.playerId})`;
     case "GAME_FINISHED":
       return `GAME_FINISHED (winner=${e.winnerId})`;
   }

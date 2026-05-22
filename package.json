@@ -5,7 +5,11 @@
   "description": "Chanchova - juego del Chancho argentino multijugador online",
   "scripts": {
     "dev": "turbo run dev",
+    "dev:api": "turbo run dev --filter=@chanchova/api",
+    "dev:web": "turbo run dev --filter=@chanchova/web",
     "build": "turbo run build",
+    "build:api": "turbo run build --filter=@chanchova/api",
+    "build:web": "turbo run build --filter=@chanchova/web",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",

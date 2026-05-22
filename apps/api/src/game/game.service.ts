@@ -3,15 +3,17 @@
 // Es el unico punto donde se aplica el motor de juego: recibe acciones del
 // gateway (que vienen del WebSocket), las despacha al ChanchoDirigidoStrategy,
 // guarda el nuevo estado y se encarga de:
-//   1. Broadcastear estado publico a todos los jugadores de la sala
-//   2. Enviar la mano privada a cada cliente (segun cambie)
-//   3. Programar / cancelar los timers de slap, pozo central, etc.
+//   1. Broadcastear estado publico a todos los jugadores de la sala.
+//   2. Enviar la mano privada a cada cliente (segun cambie).
+//   3. Programar / cancelar los timers de slap, pozo central, gracia de
+//      reconexion.
 //   4. Reaccionar a eventos especiales (eliminacion, fin de partida).
+//   5. Gatillar al BotOrchestrator para que los bots actuen.
 //
 // Es la pieza grande pero todas las reglas viven en el motor; aca solo hay
-// pegamento entre motor, timers y red.
+// pegamento entre motor, timers, bots y red.
 
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import type { Server } from "socket.io";
 
 import {
@@ -32,6 +34,7 @@ import {
 
 import { ConnectionRegistry } from "../connection/connection.registry";
 import type { LobbyRoom } from "../lobby/lobby.service";
+import { BotOrchestrator } from "./bot/bot-orchestrator";
 import { GameStore } from "./game-store";
 import {
   projectPrivateHand,
@@ -40,7 +43,7 @@ import {
 import { TimeoutManager } from "./timeout-manager";
 
 @Injectable()
-export class GameService {
+export class GameService implements OnModuleInit {
   private readonly logger = new Logger(GameService.name);
   private readonly strategy = new ChanchoDirigidoStrategy();
   private readonly deps: EngineDeps = { rng: defaultRng };
@@ -52,7 +55,14 @@ export class GameService {
     private readonly store: GameStore,
     private readonly registry: ConnectionRegistry,
     private readonly timeouts: TimeoutManager,
+    private readonly bots: BotOrchestrator,
   ) {}
+
+  onModuleInit(): void {
+    // Cableamos el dispatcher del orchestrator. Lo pasamos como arrow para
+    // capturar el `this` correcto y poder reusar la logica de submitAction.
+    this.bots.setDispatcher((gameId, action) => this.submitAction(gameId, action));
+  }
 
   // -------------------------------------------------------------------------
   // Arranque de partida (lo invoca el LobbyGateway al recibir lobby:start).
@@ -80,23 +90,77 @@ export class GameService {
   }
 
   // -------------------------------------------------------------------------
-  // Despacho de acciones desde el GameGateway.
-  // El gateway hace algunas validaciones (auth, sala) y luego llama a
-  // submitAction con el playerId ya resuelto.
+  // Despacho de acciones desde el GameGateway o el BotOrchestrator.
   // -------------------------------------------------------------------------
   submitAction(gameId: string, action: EngineAction): { error?: string } {
     return this.dispatch(gameId, action);
   }
 
   // -------------------------------------------------------------------------
-  // Hook desde LobbyGateway cuando un socket se desconecta y estaba en una
-  // partida en curso. En esta fase 2 solo logueamos; la gracia de 10s y la
-  // re-redistribucion de cartas llega en una iteracion siguiente.
+  // Hooks de conexion (los invoca el LobbyGateway).
   // -------------------------------------------------------------------------
+
+  /**
+   * El cliente se desconecto durante una partida en curso. Marcamos al
+   * jugador como DISCONNECTED y arrancamos la gracia de reconexion. Si dentro
+   * del intervalo no vuelve, se considera abandono y se despacha
+   * PLAYER_ABANDONED al motor (que lo elimina) seguido de un START_ROUND
+   * para repartir mano nueva.
+   */
   handlePlayerDisconnected(gameId: string, userId: string): void {
-    this.logger.warn(
-      `player ${userId} disconnected from game ${gameId} - reconnect grace TBD`,
+    const state = this.store.get(gameId);
+    if (!state || state.status !== "IN_PROGRESS") return;
+    const newPlayers = state.players.map((p) =>
+      p.id === userId ? { ...p, status: "DISCONNECTED" as const } : p,
     );
+    const newState: EngineState = { ...state, players: newPlayers };
+    this.store.set(gameId, newState);
+    this.broadcastPublicState(gameId, newState);
+    this.broadcastDisconnected(gameId, userId, state.config.reconnectGraceMs);
+
+    // Programar el abandono.
+    this.timeouts.schedule(
+      gameId,
+      `reconnect:${userId}`,
+      state.config.reconnectGraceMs,
+      () => this.handleAbandonExpired(gameId, userId),
+    );
+  }
+
+  /** El cliente se reconecto a tiempo: cancelamos la gracia y lo restauramos. */
+  handlePlayerReconnected(gameId: string, userId: string): void {
+    this.timeouts.cancel(gameId, `reconnect:${userId}`);
+    const state = this.store.get(gameId);
+    if (!state) return;
+    const newPlayers = state.players.map((p) =>
+      p.id === userId ? { ...p, status: "CONNECTED" as const } : p,
+    );
+    const newState: EngineState = { ...state, players: newPlayers };
+    this.store.set(gameId, newState);
+    this.broadcastPublicState(gameId, newState);
+    this.broadcastReconnected(gameId, userId);
+    // Re-mandamos su mano privada.
+    this.sendPrivateHand(userId, projectPrivateHand(newState, userId));
+  }
+
+  /** Vencio la gracia: el jugador abandona, motor lo elimina y rebarajamos. */
+  private handleAbandonExpired(gameId: string, userId: string): void {
+    this.logger.warn(`abandon: ${userId} en game ${gameId}`);
+    const result = this.dispatch(gameId, {
+      type: "PLAYER_ABANDONED",
+      playerId: userId,
+      timestamp: Date.now(),
+    });
+    if (result.error) return;
+
+    // Si la partida no termino, repartir mano nueva con los activos restantes.
+    const state = this.store.get(gameId);
+    if (state && state.status === "IN_PROGRESS") {
+      this.dispatch(gameId, {
+        type: "START_ROUND",
+        timestamp: Date.now(),
+      });
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -118,6 +182,10 @@ export class GameService {
 
     if (result.state.status === "FINISHED") {
       this.timeouts.cancelAll(gameId);
+      this.bots.cancelGame(gameId);
+    } else {
+      // Que los bots evaluen si tienen que actuar.
+      this.bots.evaluate(gameId);
     }
     return {};
   }
@@ -129,7 +197,6 @@ export class GameService {
     const round = state.currentRound;
     if (!round) return;
 
-    // Slap timeout: si hay activeCall, programar su vencimiento.
     if (round.activeCall) {
       const remaining = round.activeCall.expiresAt - Date.now();
       this.timeouts.schedule(gameId, "slap", remaining, () => {
@@ -142,7 +209,6 @@ export class GameService {
       this.timeouts.cancel(gameId, "slap");
     }
 
-    // Center grab timeout: solo si estamos en CENTER_GRAB.
     if (round.phase === "CENTER_GRAB" && round.centerPoolPrivate) {
       const remaining = round.centerPoolPrivate.expiresAt - Date.now();
       this.timeouts.schedule(gameId, "center", remaining, () => {
@@ -172,10 +238,24 @@ export class GameService {
     });
   }
 
-  /**
-   * Para cada jugador humano cuya mano cambio entre `prev` y `next`, le envia
-   * su mano privada via su socket. Asi nunca un cliente recibe la mano de otro.
-   */
+  private broadcastDisconnected(
+    gameId: string,
+    playerId: string,
+    timeoutMs: number,
+  ): void {
+    if (!this.io) return;
+    this.io
+      .to(this.channel(gameId))
+      .emit(SERVER_EVENTS.GAME_PLAYER_DISCONNECTED, { playerId, timeoutMs });
+  }
+
+  private broadcastReconnected(gameId: string, playerId: string): void {
+    if (!this.io) return;
+    this.io
+      .to(this.channel(gameId))
+      .emit(SERVER_EVENTS.GAME_PLAYER_RECONNECTED, { playerId });
+  }
+
   private broadcastHandsIfChanged(
     gameId: string,
     prev: EngineState,
@@ -289,13 +369,17 @@ function mapEngineEventToWsEvent(
         type: SERVER_EVENTS.GAME_PLAYER_ELIMINATED,
         payload: { playerId: event.playerId },
       };
+    case "PLAYER_ABANDONED":
+      return {
+        type: SERVER_EVENTS.GAME_PLAYER_ELIMINATED,
+        payload: { playerId: event.playerId, reason: "ABANDONED" },
+      };
     case "GAME_FINISHED":
       return {
         type: SERVER_EVENTS.GAME_FINISHED,
         payload: { winnerId: event.winnerId },
       };
     default:
-      // PASS_RESOLVED y CENTER_DROP_REQUESTED se reflejan via game:public_state.
       return undefined;
   }
 }
