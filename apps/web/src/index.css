@@ -1,0 +1,400 @@
+/* Estilos minimos para el MVP. La estetica fina llega en una iteracion
+   posterior; el foco aqui es que se entienda la UX y los flujos. */
+
+:root {
+  --bg: #fafaf7;
+  --fg: #1c1c1c;
+  --muted: #777;
+  --primary: #c0392b;
+  --accent: #d4a017;
+  --bg-card: #fff;
+  --border: #ccc;
+  --selected: #ffe89e;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  min-height: 100vh;
+}
+
+#root {
+  display: flex;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.screen {
+  width: 100%;
+  max-width: 900px;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.screen-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  border-bottom: 2px solid var(--border);
+  padding-bottom: 0.5rem;
+}
+
+.screen h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+button {
+  font: inherit;
+  padding: 0.5rem 1rem;
+  background: white;
+  border: 2px solid var(--fg);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
+}
+
+button.link-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  text-decoration: underline;
+  padding: 0;
+  cursor: pointer;
+}
+
+input[type="text"] {
+  font: inherit;
+  padding: 0.5rem;
+  border: 2px solid var(--border);
+  border-radius: 6px;
+}
+
+.error {
+  color: var(--primary);
+  background: #ffe7e7;
+  padding: 0.5rem;
+  border-radius: 6px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.flash {
+  padding: 0.75rem 1rem;
+  background: var(--accent);
+  color: black;
+  border-radius: 8px;
+  font-weight: bold;
+  text-align: center;
+}
+
+.lobby-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.card-action {
+  flex: 1;
+  min-width: 250px;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  background: var(--bg-card);
+}
+
+.invite-code {
+  font-family: monospace;
+  font-size: 2rem;
+  letter-spacing: 0.4em;
+  text-align: center;
+  padding: 1rem;
+  background: var(--bg-card);
+  border: 2px dashed var(--border);
+  border-radius: 8px;
+}
+
+.player-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+/* ----- Game screen ----- */
+
+.game-screen {
+  gap: 0.75rem;
+}
+
+.round-info {
+  font-family: monospace;
+  color: var(--muted);
+}
+
+.player-strip {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.player-badge {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  background: var(--bg-card);
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  min-width: 140px;
+}
+
+.player-badge--elim {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
+.player-avatar {
+  width: 36px;
+  height: 36px;
+  background: var(--accent);
+  color: black;
+  border-radius: 50%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-weight: bold;
+  position: relative;
+}
+
+.player-director {
+  position: absolute;
+  top: -10px;
+  right: -6px;
+  font-size: 1rem;
+}
+
+.player-info {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.85rem;
+}
+
+.player-name {
+  font-weight: bold;
+}
+
+.player-letters {
+  font-family: monospace;
+  letter-spacing: 0.1em;
+}
+
+.player-status {
+  color: var(--primary);
+}
+
+.table-center {
+  min-height: 120px;
+  background: #efe9d8;
+  border-radius: 12px;
+  padding: 1rem;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.center-info {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.center-pool {
+  text-align: center;
+}
+
+.pool-cards {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 0.5rem;
+}
+
+.my-area {
+  background: var(--bg-card);
+  padding: 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.my-info {
+  margin-bottom: 0.5rem;
+  font-size: 0.95rem;
+}
+
+.my-letters {
+  margin-left: 0.75rem;
+  font-family: monospace;
+}
+
+.eliminated {
+  color: var(--primary);
+  font-weight: bold;
+}
+
+.hand {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.hand--empty {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.card {
+  width: 64px;
+  height: 96px;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  font-size: 1.5rem;
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+
+.card:hover {
+  transform: translateY(-4px);
+}
+
+.card--selected {
+  background: var(--selected);
+  border-color: var(--accent);
+  transform: translateY(-8px);
+}
+
+.card-value {
+  font-weight: bold;
+  font-size: 1.2rem;
+}
+
+.card-suit {
+  font-size: 1.5rem;
+}
+
+.card--back {
+  background: var(--primary);
+  color: white;
+  font-size: 2rem;
+}
+
+.card-back-pattern {
+  filter: grayscale(0.3);
+}
+
+.action-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.action-panel {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  background: var(--bg-card);
+  padding: 0.75rem;
+  border-radius: 8px;
+}
+
+.director-controls {
+  background: var(--bg-card);
+  padding: 0.75rem;
+  border-radius: 8px;
+}
+
+.counts {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.counts button.selected {
+  background: var(--accent);
+  color: black;
+}
+
+.directions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.call-panel {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.call-panel.slap-active {
+  flex-direction: column;
+  align-items: stretch;
+  background: #fff7d6;
+  padding: 0.75rem;
+  border-radius: 8px;
+  border: 2px solid var(--accent);
+}
+
+.slap-btn {
+  font-size: 1.5rem;
+  padding: 1rem;
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
+  font-weight: bold;
+}
+
+.chancho-btn {
+  background: var(--primary);
+  color: white;
+  border-color: var(--primary);
+  font-weight: bold;
+}
+
+.chancha-btn {
+  background: var(--accent);
+  color: black;
+  border-color: var(--accent);
+}
+
+.game-finished {
+  text-align: center;
+  padding: 2rem;
+  background: var(--accent);
+  border-radius: 12px;
+  color: black;
+}
