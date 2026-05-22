@@ -1,23 +1,20 @@
-// Patrón Strategy para los modos de juego.
-// Cada modo (Chancho Dirigido, Chancho Va) implementará esta interfaz.
-// La implementación concreta llega en la Fase 1.
+// Patron Strategy para los modos de juego.
+//
+// Cada modo (Chancho Dirigido, Chancho Va) implementa esta interfaz consumiendo
+// EngineAction y devolviendo un nuevo EngineState (reducer puro). El motor es
+// la unica fuente de verdad sobre el estado de la partida; el server lo envuelve
+// y hace I/O (WebSockets, persistencia).
 
-import type { GameSession } from "@chanchova/shared";
-
-export interface GameAction {
-  type: string;
-  playerId: string;
-  payload?: unknown;
-  timestamp: number;
-}
+import type { ApplyResult, EngineAction, EngineDeps, EngineState } from "./types";
 
 export interface GameModeStrategy {
-  /** Inicializa una nueva ronda dentro de la sesión */
-  startRound(session: GameSession): GameSession;
-
-  /** Aplica una acción y devuelve el nuevo estado */
-  applyAction(session: GameSession, action: GameAction): GameSession;
-
-  /** Determina si la ronda actual terminó */
-  shouldEndRound(session: GameSession): boolean;
+  /**
+   * Aplica una accion sobre el estado actual y devuelve el nuevo estado
+   * mas eventos derivados. Funcion pura: no muta `state` ni `action`.
+   */
+  applyAction(
+    state: EngineState,
+    action: EngineAction,
+    deps: EngineDeps,
+  ): ApplyResult;
 }
