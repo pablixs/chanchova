@@ -128,7 +128,8 @@ export type EngineAction =
   | { type: "PLAYER_CALLS_CHANCHO"; playerId: string; timestamp: number }
   | { type: "PLAYER_CALLS_CHANCHA"; playerId: string; timestamp: number }
   | { type: "PLAYER_SLAPS"; playerId: string; timestamp: number }
-  | { type: "CALL_TIMEOUT"; timestamp: number };
+  | { type: "CALL_TIMEOUT"; timestamp: number }
+  | { type: "PLAYER_ABANDONED"; playerId: string; timestamp: number };
 
 // Dependencias del motor (RNG inyectable para tests deterministicos).
 export interface EngineDeps {
@@ -169,6 +170,7 @@ export type EngineEmittedEvent =
       winnerId?: string;
     }
   | { type: "PLAYER_ELIMINATED"; playerId: string }
+  | { type: "PLAYER_ABANDONED"; playerId: string }
   | { type: "GAME_FINISHED"; winnerId: string };
 
 export type PenaltyReason =

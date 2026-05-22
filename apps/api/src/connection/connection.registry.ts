@@ -14,6 +14,8 @@ export interface ConnectionInfo {
   userId: string;
   displayName: string;
   isGuest: boolean;
+  /** Token de sesion (para soportar reconexiones). */
+  sessionToken: string;
   // Sala en la que esta el usuario; null si esta en el lobby raiz.
   gameId?: string;
 }

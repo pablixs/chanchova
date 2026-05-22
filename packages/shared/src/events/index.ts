@@ -57,6 +57,8 @@ export const SERVER_EVENTS = {
 export interface AuthIdentifyPayload {
   token?: string; // Google OAuth id_token
   guestName?: string;
+  /** Token de sesion previa, para reconectar como el mismo usuario. */
+  sessionToken?: string;
 }
 
 export interface LobbyCreatePayload {
@@ -96,6 +98,8 @@ export interface AuthOkPayload {
   userId: string;
   displayName: string;
   isGuest: boolean;
+  /** Token para reconectar; el cliente lo persiste en localStorage. */
+  sessionToken: string;
 }
 
 export interface ErrorPayload {

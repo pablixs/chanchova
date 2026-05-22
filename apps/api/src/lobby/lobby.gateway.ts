@@ -1,8 +1,9 @@
 // Gateway WebSocket para todos los eventos del lobby.
 //
 // Cada cliente se conecta primero, manda `auth:identify` con su nombre de guest
-// (la version completa con Google OAuth llega en una fase posterior), y a partir
-// de ese momento puede crear/unirse/listar salas.
+// (la version completa con Google OAuth llega en una fase posterior). Si el
+// cliente ya tenia una sesion previa (sessionToken guardado en localStorage),
+// puede mandarlo y el server lo reconecta a su userId/sala anterior.
 
 import { Logger } from "@nestjs/common";
 import {
@@ -27,6 +28,7 @@ import {
 } from "@chanchova/shared";
 
 import { ConnectionRegistry } from "../connection/connection.registry";
+import { SessionService } from "../connection/session.service";
 import { GameService } from "../game/game.service";
 import { LobbyService, type LobbyRoom } from "./lobby.service";
 
@@ -44,6 +46,7 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   constructor(
     private readonly registry: ConnectionRegistry,
+    private readonly sessions: SessionService,
     private readonly lobby: LobbyService,
     private readonly games: GameService,
   ) {}
@@ -58,13 +61,13 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect {
       `socket disconnected ${socket.id} (user=${info?.userId ?? "-"} game=${info?.gameId ?? "-"})`,
     );
     if (info?.gameId) {
-      // Si estaba en una sala todavia en LOBBY, lo sacamos. Si la partida ya
-      // empezo, GameService maneja la desconexion (proxima fase: gracia 10s).
       const room = this.lobby.get(info.gameId);
       if (room?.status === "WAITING") {
+        // En el lobby todavia: salida directa.
         const updated = this.lobby.leave(info.gameId, info.userId);
         if (updated) this.broadcastLobbyState(updated);
       } else if (room?.status === "STARTED") {
+        // Partida en curso: gracia de reconexion (lo maneja GameService).
         this.games.handlePlayerDisconnected(info.gameId, info.userId);
       }
     }
@@ -72,12 +75,55 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   // -------------------------------------------------------------------------
   // auth:identify
+  //
+  // Si el payload incluye un sessionToken valido, restauramos esa sesion
+  // (mismo userId, mismo gameId si la sala sigue existiendo). En caso
+  // contrario creamos un userId/sessionToken nuevos.
   // -------------------------------------------------------------------------
   @SubscribeMessage(CLIENT_EVENTS.AUTH_IDENTIFY)
   handleIdentify(
     @ConnectedSocket() socket: Socket,
     @MessageBody() payload: AuthIdentifyPayload,
   ): void {
+    const existing = payload.sessionToken
+      ? this.sessions.get(payload.sessionToken)
+      : undefined;
+    if (existing) {
+      // Reconexion.
+      this.registry.register(socket.id, {
+        userId: existing.userId,
+        displayName: existing.displayName,
+        isGuest: existing.isGuest,
+        sessionToken: payload.sessionToken!,
+        gameId: existing.gameId,
+      });
+      socket.emit(SERVER_EVENTS.AUTH_OK, {
+        userId: existing.userId,
+        displayName: existing.displayName,
+        isGuest: existing.isGuest,
+        sessionToken: payload.sessionToken,
+      });
+      // Si estaba en una sala/partida, reincorporamos al socket al room y
+      // notificamos al GameService.
+      if (existing.gameId) {
+        void socket.join(this.roomChannel(existing.gameId));
+        const room = this.lobby.get(existing.gameId);
+        if (room) {
+          // Reenviarle el estado de la sala (lobby o partida).
+          if (room.status === "WAITING") {
+            socket.emit(SERVER_EVENTS.LOBBY_STATE, this.lobbyStateOf(room));
+          } else {
+            this.games.handlePlayerReconnected(existing.gameId, existing.userId);
+          }
+        }
+      }
+      this.logger.log(
+        `reconnected ${socket.id} -> ${existing.userId} (${existing.displayName})`,
+      );
+      return;
+    }
+
+    // Identificacion nueva.
     const guestName = (payload.guestName ?? "").trim();
     if (!guestName) {
       socket.emit(SERVER_EVENTS.AUTH_ERROR, {
@@ -87,15 +133,22 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect {
       return;
     }
     const userId = `guest-${userIdNanoid()}`;
+    const sessionToken = this.sessions.create({
+      userId,
+      displayName: guestName,
+      isGuest: true,
+    });
     this.registry.register(socket.id, {
       userId,
       displayName: guestName,
       isGuest: true,
+      sessionToken,
     });
     socket.emit(SERVER_EVENTS.AUTH_OK, {
       userId,
       displayName: guestName,
       isGuest: true,
+      sessionToken,
     });
     this.logger.log(`identified ${socket.id} -> ${userId} (${guestName})`);
   }
@@ -119,6 +172,7 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect {
     });
     void socket.join(this.roomChannel(room.gameId));
     this.registry.setGameId(socket.id, room.gameId);
+    this.sessions.setGameId(conn.sessionToken, room.gameId);
     this.broadcastLobbyState(room);
   }
 
@@ -140,6 +194,7 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect {
       );
       void socket.join(this.roomChannel(room.gameId));
       this.registry.setGameId(socket.id, room.gameId);
+      this.sessions.setGameId(conn.sessionToken, room.gameId);
       this.broadcastLobbyState(room);
     } catch (err) {
       this.emitError(socket, "JOIN_FAILED", (err as Error).message);
@@ -156,6 +211,7 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const updated = this.lobby.leave(conn.gameId, conn.userId);
     void socket.leave(this.roomChannel(conn.gameId));
     this.registry.setGameId(socket.id, undefined);
+    this.sessions.setGameId(conn.sessionToken, undefined);
     if (updated) this.broadcastLobbyState(updated);
   }
 
@@ -215,8 +271,8 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect {
     return `room:${gameId}`;
   }
 
-  private broadcastLobbyState(room: LobbyRoom): void {
-    this.server.to(this.roomChannel(room.gameId)).emit(SERVER_EVENTS.LOBBY_STATE, {
+  private lobbyStateOf(room: LobbyRoom) {
+    return {
       gameId: room.gameId,
       code: room.code,
       mode: room.mode,
@@ -225,7 +281,13 @@ export class LobbyGateway implements OnGatewayConnection, OnGatewayDisconnect {
       status: room.status,
       hostUserId: room.hostUserId,
       players: room.players,
-    });
+    };
+  }
+
+  private broadcastLobbyState(room: LobbyRoom): void {
+    this.server
+      .to(this.roomChannel(room.gameId))
+      .emit(SERVER_EVENTS.LOBBY_STATE, this.lobbyStateOf(room));
   }
 
   private emitError(socket: Socket, code: string, message?: string): void {

@@ -15,6 +15,7 @@ import type {
   PassDirection,
   Player,
   Round,
+  SessionStatus,
 } from "@chanchova/shared";
 import { GROUP_SIZE, HAND_SIZE } from "@chanchova/shared";
 
@@ -110,7 +111,71 @@ export class ChanchoDirigidoStrategy implements GameModeStrategy {
         return this.playerSlaps(state, action);
       case "CALL_TIMEOUT":
         return this.callTimeout(state, action.timestamp);
+      case "PLAYER_ABANDONED":
+        return this.playerAbandoned(state, action);
     }
+  }
+
+  // ----------------------------------------------------------------------
+  // PLAYER_ABANDONED
+  // ----------------------------------------------------------------------
+  // Lo invoca el server cuando un jugador se desconecto y vencio la gracia
+  // de reconexion. El motor lo marca como eliminado; si solo queda un activo
+  // declara ganador. El server debe despachar START_ROUND despues si la
+  // partida sigue (la mano se vuelve a repartir con los activos restantes).
+  private playerAbandoned(
+    state: EngineState,
+    action: Extract<EngineAction, { type: "PLAYER_ABANDONED" }>,
+  ): ApplyResult {
+    if (state.status === "FINISHED") {
+      return fail(state, "GAME_FINISHED", "La partida ya termino.");
+    }
+    const score = getScore(state, action.playerId);
+    if (!score) {
+      return fail(state, "PLAYER_NOT_IN_GAME", "Jugador desconocido.");
+    }
+    if (score.isEliminated) {
+      // Idempotente: no falla pero no genera eventos.
+      return { state };
+    }
+
+    const newScores = state.scores.map((s) =>
+      s.playerId === action.playerId
+        ? {
+            ...s,
+            isEliminated: true,
+            // No le sumamos letras al abandono (no perdio por jugar mal).
+          }
+        : s,
+    );
+
+    const events: EngineEmittedEvent[] = [
+      { type: "PLAYER_ABANDONED", playerId: action.playerId },
+    ];
+
+    // Cualquier activeCall del que el abandonado era caller queda invalida;
+    // si era CHANCHO valido perdimos esa info, pero el server va a reiniciar
+    // la ronda al recibir este evento. Limpiamos por las dudas.
+    const newRound: EngineRound | undefined = state.currentRound
+      ? { ...state.currentRound, activeCall: undefined }
+      : undefined;
+
+    const winner = findGameWinner(newScores);
+    let newStatus: SessionStatus = state.status;
+    if (winner) {
+      events.push({ type: "GAME_FINISHED", winnerId: winner });
+      newStatus = "FINISHED";
+    }
+
+    return {
+      state: {
+        ...state,
+        status: newStatus,
+        scores: newScores,
+        currentRound: newRound,
+      },
+      events,
+    };
   }
 
   // ----------------------------------------------------------------------
