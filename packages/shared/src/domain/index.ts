@@ -56,11 +56,30 @@ export type RoundPhase =
   | "CHANCHO_RESOLVING"
   | "RESOLVED";
 
+/**
+ * Vista publica del pozo central (no expone las cartas reales que estan
+ * boca abajo - el server las conoce, el cliente solo ve la cantidad).
+ */
 export interface CenterPoolState {
-  cards: Card[]; // boca abajo, solo el server las conoce
+  cardCount: number;
   expectedDropPerPlayer: number;
   expiresAt: number;
   grabsByPlayer: Record<string, number>;
+}
+
+/** Vista publica de un slap (sin info que permita gaming del sistema). */
+export interface PublicSlap {
+  playerId: string;
+  timestamp: number;
+}
+
+/** Vista publica de la llamada activa (Chancho o Chancha) durante el slap window. */
+export interface PublicActiveCall {
+  type: "CHANCHO" | "CHANCHA";
+  callerId: string;
+  startedAt: number;
+  expiresAt: number;
+  slaps: PublicSlap[];
 }
 
 export interface Round {
@@ -70,6 +89,7 @@ export interface Round {
   phase: RoundPhase;
   pendingPass?: PassInstruction;
   centerPool?: CenterPoolState;
+  activeCall?: PublicActiveCall;
   chanchasUsedBy: string[]; // ids de jugadores que ya amagaron en esta ronda
 }
 
