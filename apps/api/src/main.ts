@@ -1,10 +1,14 @@
 // Bootstrap de la API. Usamos Fastify como adaptador HTTP por su rendimiento.
+//
+// Como tambien usamos WebSockets (Socket.IO via @nestjs/platform-socket.io),
+// conviven HTTP REST y WS sobre el mismo servidor.
 import "reflect-metadata";
 import { NestFactory } from "@nestjs/core";
 import {
   FastifyAdapter,
   NestFastifyApplication,
 } from "@nestjs/platform-fastify";
+import { IoAdapter } from "@nestjs/platform-socket.io";
 import { AppModule } from "./app.module";
 
 async function bootstrap() {
@@ -18,6 +22,9 @@ async function bootstrap() {
     origin: process.env.WEB_ORIGIN ?? true,
     credentials: true,
   });
+
+  // Adapter Socket.IO sobre Fastify.
+  app.useWebSocketAdapter(new IoAdapter(app));
 
   const port = Number(process.env.PORT ?? 3000);
   await app.listen(port, "0.0.0.0");
