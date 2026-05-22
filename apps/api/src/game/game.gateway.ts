@@ -81,12 +81,26 @@ export class GameGateway {
     @ConnectedSocket() socket: Socket,
     @MessageBody() payload: GrabFromCenterPayload,
   ): void {
-    this.dispatchPlayerAction(socket, (playerId, timestamp) => ({
-      type: "PLAYER_GRABS_FROM_CENTER",
-      playerId,
-      cardId: payload.cardId,
-      timestamp,
-    }));
+    // Caso especial: el cardId que llega es un id ANONIMO. La traduccion al
+    // id real la hace el GameService antes de dispatchar al motor.
+    const conn = this.registry.get(socket.id);
+    if (!conn?.gameId) {
+      socket.emit(SERVER_EVENTS.ERROR, {
+        code: "NOT_IN_GAME",
+        message: "No estas en una partida",
+      });
+      return;
+    }
+    const result = this.games.submitGrab(conn.gameId, conn.userId, payload.cardId);
+    if (result.error) {
+      socket.emit(SERVER_EVENTS.ERROR, {
+        code: "ACTION_REJECTED",
+        message: result.error,
+      });
+      this.logger.debug(
+        `grab rejected for ${conn.userId} in ${conn.gameId}: ${result.error}`,
+      );
+    }
   }
 
   @SubscribeMessage(CLIENT_EVENTS.GAME_CALL_CHANCHO)

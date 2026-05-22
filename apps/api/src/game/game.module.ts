@@ -3,6 +3,7 @@ import { BotOrchestrator } from "./bot/bot-orchestrator";
 import { GameGateway } from "./game.gateway";
 import { GameService } from "./game.service";
 import { GameStore } from "./game-store";
+import { PoolAnonymizer } from "./pool-anonymizer";
 import { TimeoutManager } from "./timeout-manager";
 
 @Module({
@@ -10,9 +11,10 @@ import { TimeoutManager } from "./timeout-manager";
     GameStore,
     TimeoutManager,
     BotOrchestrator,
+    PoolAnonymizer,
     GameService,
     GameGateway,
   ],
-  exports: [GameService],
+  exports: [GameService, PoolAnonymizer],
 })
 export class GameModule {}

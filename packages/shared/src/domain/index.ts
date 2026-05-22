@@ -57,11 +57,13 @@ export type RoundPhase =
   | "RESOLVED";
 
 /**
- * Vista publica del pozo central (no expone las cartas reales que estan
- * boca abajo - el server las conoce, el cliente solo ve la cantidad).
+ * Vista publica del pozo central. Cada carta tiene un id ANONIMO generado
+ * por el server (los reales filtrarian valor/palo). El cliente clickea uno,
+ * el server lo traduce al id real antes de procesar.
  */
 export interface CenterPoolState {
-  cardCount: number;
+  /** ids anonimos boca abajo, en el orden visible por el cliente */
+  cardIds: string[];
   expectedDropPerPlayer: number;
   expiresAt: number;
   grabsByPlayer: Record<string, number>;

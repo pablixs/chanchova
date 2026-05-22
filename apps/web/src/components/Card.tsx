@@ -1,4 +1,4 @@
-// Visual de una carta. Para el MVP usamos texto simple con glifos de palo.
+// Carta visual estilo casino: esquina con valor + palo y centro grande.
 
 import type { Card as CardType } from "@chanchova/shared";
 
@@ -10,38 +10,37 @@ const SUIT_GLYPH: Record<string, string> = {
 };
 
 const SUIT_COLOR: Record<string, string> = {
-  oros: "#d4a017",
+  oros: "#d49b05",
   copas: "#c0392b",
-  espadas: "#2c3e50",
-  bastos: "#27ae60",
+  espadas: "#1c2c4a",
+  bastos: "#1f8b4c",
 };
 
 interface Props {
   card: CardType;
   selected?: boolean;
   onClick?: () => void;
-  faceDown?: boolean;
 }
 
-export function Card({ card, selected, onClick, faceDown }: Props) {
-  if (faceDown) {
-    return (
-      <div className="card card--back" onClick={onClick}>
-        <div className="card-back-pattern">🐷</div>
-      </div>
-    );
-  }
+export function Card({ card, selected, onClick }: Props) {
   const color = SUIT_COLOR[card.suit] ?? "#333";
   const glyph = SUIT_GLYPH[card.suit] ?? card.suit;
   return (
     <button
       type="button"
-      className={`card ${selected ? "card--selected" : ""}`}
+      className={`big-card ${selected ? "big-card--selected" : ""}`}
       onClick={onClick}
       style={{ color }}
     >
-      <span className="card-value">{card.value}</span>
-      <span className="card-suit">{glyph}</span>
+      <span className="big-card__top">
+        <span>{card.value}</span>
+        <span>{glyph}</span>
+      </span>
+      <span className="big-card__center">{glyph}</span>
+      <span className="big-card__bottom">
+        <span>{card.value}</span>
+        <span>{glyph}</span>
+      </span>
     </button>
   );
 }

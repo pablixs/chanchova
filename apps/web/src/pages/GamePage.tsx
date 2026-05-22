@@ -1,18 +1,15 @@
-// Mesa de juego.
-//
-// Renderiza el estado actual y muestra los controles segun la fase y rol del
-// jugador. Los componentes auxiliares (Hand, PlayerStrip, Card) viven en
-// `../components`. La logica de seleccion de cartas para pasar/dropear vive
-// localmente en este componente: el resto solo despacha acciones al server.
+// Mesa de juego: paño verde con jugadores alrededor, mi mano abajo, y el
+// centro con el contexto de la fase actual (o el pozo, o el slap overlay).
 
 import { useEffect, useMemo, useState } from "react";
 
-import type { CenterPoolState, Round } from "@chanchova/shared";
 import { HAND_SIZE } from "@chanchova/shared";
+import type { Round } from "@chanchova/shared";
 
 import { Card } from "../components/Card";
-import { Hand } from "../components/Hand";
-import { PlayerStrip } from "../components/PlayerStrip";
+import { PlayerSeat } from "../components/PlayerSeat";
+import { TableCenter } from "../components/TableCenter";
+import { distributeSeats } from "../lib/seating";
 import { useApp } from "../state/AppContext";
 
 export function GamePage() {
@@ -32,16 +29,25 @@ export function GamePage() {
   } = useApp();
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  // Cuando cambia la fase, limpiamos la seleccion (cartas viejas pueden no estar).
+  // Cuando cambia la fase o el id de ronda, limpiamos la seleccion.
   useEffect(() => {
     setSelected(new Set());
   }, [game?.currentRound?.phase, game?.currentRound?.index]);
 
-  if (!user || !game) return <p>Cargando partida...</p>;
+  if (!user || !game) {
+    return <p style={{ padding: "2rem" }}>Cargando partida…</p>;
+  }
+
   const round = game.currentRound;
-  const isDirector = round?.directorId === user.userId;
   const myScore = game.scores.find((s) => s.playerId === user.userId);
   const iAmEliminated = myScore?.isEliminated ?? false;
+  const isDirector = round?.directorId === user.userId;
+  const seated = useMemoSeats(game.players, user.userId);
+  const others = seated.filter((s) => s.player.id !== user.userId);
+
+  const directorName = round?.directorId
+    ? game.players.find((p) => p.id === round.directorId)?.displayName
+    : undefined;
 
   const toggleSelected = (cardId: string) => {
     setSelected((prev) => {
@@ -52,138 +58,156 @@ export function GamePage() {
     });
   };
 
+  const activeCall = round?.activeCall;
+  const showSlap = activeCall && activeCall.callerId !== user.userId && !iAmEliminated;
+  const callerName = activeCall
+    ? game.players.find((p) => p.id === activeCall.callerId)?.displayName
+    : undefined;
+  const alreadySlapped = activeCall?.slaps.some((s) => s.playerId === user.userId);
+
   return (
-    <div className="screen game-screen">
-      <header className="screen-header">
-        <h1>🐷 Mesa {game.code}</h1>
-        <span className="round-info">
-          Ronda {round?.index ?? "-"} · {round?.phase ?? game.status}
-        </span>
-      </header>
-
-      <PlayerStrip game={game} myUserId={user.userId} />
-
-      {flash && <div className="flash">{flash}</div>}
-
-      <section className="table-center">
-        {round && <CenterArea round={round} onGrab={grabFromCenter} />}
-      </section>
-
-      <section className="my-area">
-        <div className="my-info">
-          <strong>{user.displayName}</strong>
-          {iAmEliminated && <span className="eliminated"> ✗ ELIMINADO</span>}
-          <span className="my-letters"> letras: {myScore?.letters || "—"}</span>
+    <div className="game-table">
+      <div className="table-topbar">
+        <div className="table-topbar__round">
+          Sala {game.code} · Ronda {round?.index ?? "-"} · {labelPhase(round?.phase)}
         </div>
-        <Hand cards={myHand} selectedIds={selected} onToggle={toggleSelected} />
-      </section>
-
-      <section className="action-bar">
-        {round && !iAmEliminated && (
-          <ActionPanel
-            round={round}
-            isDirector={isDirector}
-            selected={selected}
-            handSize={myHand.length}
-            onDirectorPass={directorPass}
-            onPass={() => passCards([...selected])}
-            onDrop={() => dropToCenter([...selected])}
-          />
-        )}
-        {round && !iAmEliminated && (
-          <CallPanel
-            round={round}
-            myUserId={user.userId}
-            onChancho={callChancho}
-            onChancha={callChancha}
-            onSlap={slap}
-          />
-        )}
-      </section>
-
-      {error && <p className="error">{error.message}</p>}
-
-      {game.status === "FINISHED" && (
-        <div className="game-finished">
-          <h2>🏆 Partida terminada</h2>
-          <p>Ganador: {game.scores.find((s) => !s.isEliminated)?.playerId ?? "?"}</p>
+        <div>
+          {user.displayName} · {myScore?.letters || "—"}
         </div>
-      )}
-    </div>
-  );
-}
+      </div>
 
-// -------------------------------------------------------------------------
-// Centro de la mesa
-// -------------------------------------------------------------------------
-function CenterArea({
-  round,
-  onGrab,
-}: {
-  round: Round;
-  onGrab: (cardId: string) => void;
-}) {
-  if (round.phase === "CENTER_GRAB" && round.centerPool) {
-    return <CenterPool pool={round.centerPool} onGrab={onGrab} />;
-  }
-  if (round.phase === "CENTER_DROP") {
-    return (
-      <div className="center-info">
-        Esperando que todos tiren al pozo (
-        {round.centerPool?.expectedDropPerPlayer ?? "?"} cartas c/u)
-      </div>
-    );
-  }
-  if (round.phase === "PASSING_LATERAL" && round.pendingPass) {
-    return (
-      <div className="center-info">
-        Pase: {round.pendingPass.count} carta(s) a la {round.pendingPass.direction}
-      </div>
-    );
-  }
-  if (round.phase === "DIRECTOR_PICKING") {
-    return (
-      <div className="center-info">
-        Esperando instrucción del director ({round.directorId ?? "?"})
-      </div>
-    );
-  }
-  return null;
-}
-
-function CenterPool({
-  pool,
-  onGrab,
-}: {
-  pool: CenterPoolState;
-  onGrab: (cardId: string) => void;
-}) {
-  // En esta vista no conocemos los cardIds reales (el server no los manda
-  // boca abajo por seguridad). Para el MVP, mostramos N "cartas dadas vuelta"
-  // y al clickear no enviamos un id (el server tendria que aceptar "any").
-  // Como mejora, el server podria mandar id-anonimos. Por ahora, los bots
-  // grabbean todo y los humanos casi no llegan a ver esta pantalla.
-  return (
-    <div className="center-pool">
-      <p className="muted">Pozo central — {pool.cardCount} cartas (boca abajo)</p>
-      <div className="pool-cards">
-        {Array.from({ length: pool.cardCount }).map((_, i) => (
-          <Card
-            key={i}
-            faceDown
-            // sin id real: deshabilitado por ahora
-            onClick={() => onGrab(`pool-anon-${i}`)}
-            card={{ id: "?", deckId: "?", value: "?", suit: "?" }}
+      <div className="table-arena">
+        {/* Asientos de los demás jugadores */}
+        {others.map(({ player, position }) => (
+          <PlayerSeat
+            key={player.id}
+            player={player}
+            position={position}
+            score={game.scores.find((s) => s.playerId === player.id)}
+            isDirector={round?.directorId === player.id}
+            handSize={HAND_SIZE} // simplificacion: asumimos mano completa
           />
         ))}
+
+        {/* Centro de la mesa */}
+        {round && !showSlap && (
+          <div className="table-center">
+            <TableCenter
+              round={round}
+              directorName={directorName}
+              onGrab={grabFromCenter}
+            />
+          </div>
+        )}
+
+        {/* Slap overlay tapando el centro cuando hay activeCall */}
+        {showSlap && activeCall && (
+          <div className="slap-overlay">
+            <div className="slap-overlay__content">
+              <h2 className="slap-overlay__title">
+                {activeCall.type === "CHANCHO" ? "¡CHANCHO!" : "¡CHAN-...!"}
+              </h2>
+              <p className="slap-overlay__caller">
+                {callerName ?? activeCall.callerId} apoyó la mano primero
+              </p>
+              <button
+                type="button"
+                className="slap-btn"
+                onClick={slap}
+                disabled={alreadySlapped}
+              >
+                {alreadySlapped ? "✓ Apoyaste" : "✋ Apoyar mi mano"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Flash messages */}
+        {flash && <div className="table-flash">{flash}</div>}
+
+        {/* Mi area inferior */}
+        <div className="my-area">
+          <div className="my-meta">
+            <span>{user.displayName}</span>
+            <span className="my-meta__letters">{myScore?.letters || "—"}</span>
+            {iAmEliminated && <span style={{ color: "salmon" }}>✗ ELIMINADO</span>}
+          </div>
+
+          {!iAmEliminated && (
+            <>
+              {/* Action panel especifico de la fase */}
+              {round && (
+                <ActionPanel
+                  round={round}
+                  isDirector={isDirector}
+                  selected={selected}
+                  handSize={myHand.length}
+                  onDirectorPass={directorPass}
+                  onPass={() => passCards([...selected])}
+                  onDrop={() => dropToCenter([...selected])}
+                />
+              )}
+
+              <div className="my-hand">
+                {myHand.map((c) => (
+                  <Card
+                    key={c.id}
+                    card={c}
+                    selected={selected.has(c.id)}
+                    onClick={() => toggleSelected(c.id)}
+                  />
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Botones flotantes para Chancho/Chancha (siempre visibles si no hay call activo) */}
+        {round && !iAmEliminated && !activeCall && (
+          <div className="call-floats">
+            <button
+              type="button"
+              className="float-btn float-btn--chancho"
+              onClick={callChancho}
+            >
+              🐷 Chancho
+            </button>
+            <button
+              type="button"
+              className="float-btn float-btn--chancha"
+              onClick={callChancha}
+              disabled={round.chanchasUsedBy.includes(user.userId)}
+            >
+              🤥 Chan-...
+            </button>
+          </div>
+        )}
+
+        {error && <div className="error-toast">⚠ {error.message}</div>}
+
+        {/* Pantalla de fin de partida */}
+        {game.status === "FINISHED" && (
+          <div className="game-finished-overlay">
+            <div className="game-finished-card">
+              <h2>🏆 Partida terminada</h2>
+              <p style={{ margin: 0 }}>
+                Ganador:{" "}
+                <strong>
+                  {game.players.find(
+                    (p) => !game.scores.find((s) => s.playerId === p.id)?.isEliminated,
+                  )?.displayName ?? "—"}
+                </strong>
+              </p>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-// -------------------------------------------------------------------------
-// Panel de acciones de fase (director, pase, drop)
-// -------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
 function ActionPanel({
   round,
   isDirector,
@@ -202,16 +226,21 @@ function ActionPanel({
   onDrop: () => void;
 }) {
   if (round.phase === "DIRECTOR_PICKING" && isDirector) {
-    return <DirectorControls onPass={onDirectorPass} maxCount={handSize} />;
+    return <DirectorControls maxCount={handSize} onPass={onDirectorPass} />;
   }
   if (round.phase === "PASSING_LATERAL") {
     const need = round.pendingPass?.count ?? 0;
     return (
       <div className="action-panel">
-        <span>
-          Seleccioná {need} carta{need === 1 ? "" : "s"} para pasar
+        <span className="action-panel__hint">
+          Elegí {need} carta{need === 1 ? "" : "s"} para pasar
         </span>
-        <button type="button" onClick={onPass} disabled={selected.size !== need}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={onPass}
+          disabled={selected.size !== need}
+        >
           Pasar {selected.size}/{need}
         </button>
       </div>
@@ -221,10 +250,15 @@ function ActionPanel({
     const need = round.centerPool?.expectedDropPerPlayer ?? 0;
     return (
       <div className="action-panel">
-        <span>
-          Seleccioná {need} carta{need === 1 ? "" : "s"} para tirar al centro
+        <span className="action-panel__hint">
+          Tirá {need} carta{need === 1 ? "" : "s"} al pozo
         </span>
-        <button type="button" onClick={onDrop} disabled={selected.size !== need}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={onDrop}
+          disabled={selected.size !== need}
+        >
           Tirar {selected.size}/{need}
         </button>
       </div>
@@ -234,110 +268,72 @@ function ActionPanel({
 }
 
 function DirectorControls({
-  onPass,
   maxCount,
+  onPass,
 }: {
-  onPass: (count: number, direction: "LEFT" | "RIGHT" | "CENTER") => void;
   maxCount: number;
+  onPass: (count: number, direction: "LEFT" | "RIGHT" | "CENTER") => void;
 }) {
   const [count, setCount] = useState(1);
   const max = Math.max(1, Math.min(HAND_SIZE, maxCount));
-  const counts = useMemo(
-    () => Array.from({ length: max }, (_, i) => i + 1),
-    [max],
-  );
+  const counts = Array.from({ length: max }, (_, i) => i + 1);
   return (
     <div className="director-controls">
-      <p>Sos el director. Decidí cuántas cartas y a dónde van:</p>
-      <div className="counts">
+      <span className="director-controls__label">
+        Sos el director · cuántas cartas:
+      </span>
+      <div className="director-controls__row">
         {counts.map((c) => (
           <button
             key={c}
             type="button"
-            className={c === count ? "selected" : ""}
+            className={`chip ${c === count ? "chip--active" : ""}`}
             onClick={() => setCount(c)}
           >
             {c}
           </button>
         ))}
       </div>
-      <div className="directions">
-        <button type="button" onClick={() => onPass(count, "LEFT")}>
-          ⬅ {count} a la izquierda
+      <div className="director-controls__row">
+        <button type="button" className="dir-btn" onClick={() => onPass(count, "LEFT")}>
+          ⬅ Izquierda
         </button>
-        <button type="button" onClick={() => onPass(count, "CENTER")}>
-          ⬇ {count} al centro
+        <button type="button" className="dir-btn" onClick={() => onPass(count, "CENTER")}>
+          ⬇ Centro
         </button>
-        <button type="button" onClick={() => onPass(count, "RIGHT")}>
-          {count} a la derecha ➡
+        <button type="button" className="dir-btn" onClick={() => onPass(count, "RIGHT")}>
+          Derecha ➡
         </button>
       </div>
     </div>
   );
 }
 
-// -------------------------------------------------------------------------
-// Panel de llamadas (Chancho / Chancha / Slap)
-// -------------------------------------------------------------------------
-function CallPanel({
-  round,
-  myUserId,
-  onChancho,
-  onChancha,
-  onSlap,
-}: {
-  round: Round;
-  myUserId: string;
-  onChancho: () => void;
-  onChancha: () => void;
-  onSlap: () => void;
-}) {
-  const activeCall = round.activeCall;
-  const usedChancha = round.chanchasUsedBy.includes(myUserId);
+// ---------------------------------------------------------------------------
 
-  if (activeCall && activeCall.callerId !== myUserId) {
-    // Hay un llamado activo y no fui yo: gran botón para apoyar.
-    const ahead = activeCall.slaps.find((s) => s.playerId === myUserId);
-    return (
-      <div className="call-panel slap-active">
-        <h2>
-          {activeCall.callerId} cantó {activeCall.type === "CHANCHO" ? "¡CHANCHO!" : "¡CHAN-...!"}
-        </h2>
-        <button
-          type="button"
-          className="slap-btn"
-          onClick={onSlap}
-          disabled={Boolean(ahead)}
-        >
-          {ahead ? "✓ Apoyaste" : "✋ APOYAR LA MANO"}
-        </button>
-      </div>
-    );
-  }
-
-  if (activeCall && activeCall.callerId === myUserId) {
-    return (
-      <div className="call-panel">
-        <p>Esperando que los demás apoyen…</p>
-      </div>
-    );
-  }
-
-  // Sin llamado: botones para cantar/amaguar.
-  return (
-    <div className="call-panel">
-      <button type="button" className="chancho-btn" onClick={onChancho}>
-        🐷 ¡CHANCHO!
-      </button>
-      <button
-        type="button"
-        className="chancha-btn"
-        onClick={onChancha}
-        disabled={usedChancha}
-        title={usedChancha ? "Ya usaste tu chancha esta ronda" : ""}
-      >
-        🤥 ¡CHAN-...! (amague)
-      </button>
-    </div>
+function useMemoSeats(players: { id: string; seatIndex: number }[], myId: string) {
+  // Memoizamos para evitar re-render del PlayerSeat sin cambios reales.
+  return useMemo(
+    () => distributeSeats(players as any, myId),
+    [players.map((p) => p.id).join(","), myId],
   );
+}
+
+function labelPhase(phase: string | undefined): string {
+  switch (phase) {
+    case "DIRECTOR_PICKING":
+      return "El director decide";
+    case "PASSING_LATERAL":
+      return "Pasando cartas";
+    case "CENTER_DROP":
+      return "Tirando al pozo";
+    case "CENTER_GRAB":
+      return "¡A agarrar!";
+    case "CHANCHO_RESOLVING":
+      return "¡Apoyando!";
+    case "RESOLVED":
+      return "Ronda terminada";
+    default:
+      return phase ?? "—";
+  }
 }
